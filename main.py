@@ -102,23 +102,34 @@ uploaded_file = st.sidebar.file_uploader(
 # -----------------------------------------------------------------------------
 # 데이터 로드 및 시트명/이름 자동 수정
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 데이터 로드 및 시트명/컬럼명/이름 안전 처리
+# -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            # sheet_name=0 으로 설정하여 어떤 시트명('근태기록', '근무현황' 등)이든 첫번째 시트 자동 인식
+            # sheet_name=0 로 첫 번째 시트를 자동 로드
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
         
-    # 기존 파일의 이름이 홍길동, 김철수 등 이전 이름일 경우 박은경, 채미혜, 박인미, 조윤희, 성지영으로 자동 교체
-    current_names = list(df_raw['이름'].unique())
-    if current_names != TARGET_WORKERS and len(current_names) == 5:
-        name_map = dict(zip(current_names, TARGET_WORKERS))
-        df_raw['이름'] = df_raw['이름'].map(name_map)
-        st.sidebar.warning("⚠️ 파일 내 기존 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
+    # 1. 컬럼명 앞뒤 공백 제거 (예: ' 이름 ' -> '이름')
+    df_raw.columns = [str(col).strip() for col in df_raw.columns]
+
+    # 2. '이름' 컬럼 존재 여부 안전 확인
+    if '이름' in df_raw.columns:
+        current_names = list(df_raw['이름'].unique())
+        # 기존 파일의 이름이 5명이고, 설정 대상과 다를 경우 자동 매핑
+        if current_names != TARGET_WORKERS and len(current_names) == 5:
+            name_map = dict(zip(current_names, TARGET_WORKERS))
+            df_raw['이름'] = df_raw['이름'].map(name_map)
+            st.sidebar.warning("⚠️ 파일 내 이름 데이터를 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
+    else:
+        st.error("🚨 업로드한 파일에 '이름' 열(Column)이 포함되어 있지 않습니다. 파일 양식을 확인해 주세요.")
+        st.stop()
 else:
     df_raw = sample_df.copy()
     st.info("👈 사이드바에서 근무현황 파일을 업로드해주세요. (기본 5인 반영 데이터 사용 중)")
