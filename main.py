@@ -100,14 +100,29 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 근태/인증일시 스마트 처리
+# 파일 데이터 로드 및 헤더 자동 탐색
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            df_raw = pd.read_excel(uploaded_file, sheet_name=0)
+            # 💡 [스마트 헤더 찾기]: 상단 제목 행 Skip 탐색
+            df_temp = pd.read_excel(uploaded_file, header=None)
+            header_idx = None
+            keywords = ['이름', '성명', '날짜', '인증일시', '일자']
+            
+            for idx, row in df_temp.iterrows():
+                row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
+                if any(kw in row_str for kw in keywords):
+                    header_idx = idx
+                    break
+            
+            if header_idx is not None:
+                df_raw = pd.read_excel(uploaded_file, header=header_idx)
+            else:
+                df_raw = pd.read_excel(uploaded_file, sheet_name=0)
+
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
@@ -115,32 +130,28 @@ if uploaded_file is not None:
     # 컬럼명 특수문자(' / ") 및 공백 일괄 정돈
     df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # 1. '이름' 컬럼 확인
-    if '이름' not in df_raw.columns:
-        name_col = next((c for c in df_raw.columns if '이름' in c or '성명' in c), None)
-        if name_col:
-            df_raw.rename(columns={name_col: '이름'}, inplace=True)
-        else:
-            st.error(f"🚨 '이름' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
-            st.stop()
+    # 1. '이름' 컬럼 확인 및 변환
+    name_col = next((c for c in df_raw.columns if '이름' in c or '성명' in c), None)
+    if name_col:
+        df_raw.rename(columns={name_col: '이름'}, inplace=True)
+    else:
+        st.error(f"🚨 '이름' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
+        st.stop()
 
-    # 💡 2. '인증일시' 기반의 원본 근태 파일 처리 (인증일시 -> 날짜, 출근시간, 퇴근시간 파싱)
+    # 2. '인증일시' 기반 vs 일반 '날짜' 형태 분기 처리
     if '인증일시' in df_raw.columns:
         st.sidebar.info("💡 '인증일시' 기반 출퇴근 기록 파일이 감지되어 자동 집계를 진행합니다.")
         df_raw['DT'] = pd.to_datetime(df_raw['인증일시'])
         df_raw['날짜'] = df_raw['DT'].dt.strftime('%Y-%m-%d')
         df_raw['시간'] = df_raw['DT'].dt.strftime('%H:%M')
         
-        # 날짜/이름별 최소 시간(출근) 및 최대 시간(퇴근) 자동 계산
         grouped = df_raw.groupby(['날짜', '이름']).agg(
             출근시간=('시간', 'min'),
             퇴근시간=('시간', 'max'),
             기록수=('시간', 'count')
         ).reset_index()
         
-        # 출근시간과 퇴근시간이 같으면(인증이 1회만 찍힘) 퇴근시간을 미기록 처리
         grouped.loc[grouped['기록수'] == 1, '퇴근시간'] = ""
-        
         grouped['외근시간'] = ""
         grouped['복귀시간'] = ""
         grouped['휴무여부'] = "X"
@@ -149,7 +160,6 @@ if uploaded_file is not None:
         
         df_raw = grouped
     else:
-        # 일반 양식인 경우 날짜 열 자동 감지
         date_col = next((c for c in df_raw.columns if '날짜' in c or '일자' in c or '근무일' in c or 'date' in c.lower()), None)
         if date_col:
             df_raw.rename(columns={date_col: '날짜'}, inplace=True)
