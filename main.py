@@ -4,7 +4,7 @@ import numpy as np
 from datetime import datetime
 
 st.set_page_config(page_title="근태 및 수당 관리", layout="wide")
-st.title("🕒 5인 근로자 근태 및 수당 관리 시스템")
+st.title("🕒 근태 및 수당 관리 시스템")
 
 uploaded_file = st.file_uploader("📁 근무현황.xlsx 업로드", type=["xlsx"])
 
