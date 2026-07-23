@@ -100,31 +100,47 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 시트명/컬럼명/이름 자동 정돈
+# 파일 데이터 로드 및 헤더 자동 감지/정돈
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            # sheet_name=0 으로 시트 이름과 무관하게 첫 번째 시트 자동 로드
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
+            
+            # 💡 [스마트 헤더 감지]: 1행이 제목일 경우, '이름'이 포함된 진짜 컬럼 행을 자동으로 찾습니다.
+            cols_str = [str(c) for c in df_raw.columns]
+            if not any('이름' in c for c in cols_str):
+                for idx, row in df_raw.head(10).iterrows():
+                    row_vals = [str(v) for v in row.values]
+                    if any('이름' in v for v in row_vals):
+                        df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=idx + 1)
+                        break
+                        
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
         
-    # 컬럼명에 포함된 따옴표(' / ") 및 양끝 공백 자동 제거
+    # 컬럼명 특수문자(' / ") 및 공백 일괄 정돈
     df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # '이름' 컬럼 존재 확인 및 5인 명단(박은경, 채미혜, 박인미, 조윤희, 성지영) 매핑
-    if '이름' in df_raw.columns:
+    # '이름' 포함 컬럼 자동 변경 처리
+    name_col = None
+    for c in df_raw.columns:
+        if '이름' in c:
+            name_col = c
+            break
+
+    if name_col:
+        df_raw.rename(columns={name_col: '이름'}, inplace=True)
         current_names = list(df_raw['이름'].unique())
         if current_names != TARGET_WORKERS and len(current_names) == 5:
             name_map = dict(zip(current_names, TARGET_WORKERS))
             df_raw['이름'] = df_raw['이름'].map(name_map)
             st.sidebar.warning("⚠️ 파일 내 근로자 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
     else:
-        st.error("🚨 파일 내에서 '이름' 열(Column)을 찾을 수 없습니다. 파일 양식을 확인해 주세요.")
+        st.error(f"🚨 업로드한 파일에서 '이름' 열을 찾을 수 없습니다.\n현재 인식된 열 목록: {list(df_raw.columns)}")
         st.stop()
 else:
     df_raw = sample_df.copy()
