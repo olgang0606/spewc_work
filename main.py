@@ -100,7 +100,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 헤더/컬럼 자동 감지
+# 파일 데이터 로드 및 근태/인증일시 스마트 처리
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
@@ -108,16 +108,6 @@ if uploaded_file is not None:
             df_raw = pd.read_csv(uploaded_file)
         else:
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
-            
-            # [스마트 헤더 감지]: 1행이 제목일 경우 '이름'이나 '날짜'가 포함된 행 찾기
-            cols_str = [str(c) for c in df_raw.columns]
-            if not any('이름' in c or '날짜' in c or '일자' in c for c in cols_str):
-                for idx, row in df_raw.head(10).iterrows():
-                    row_vals = [str(v) for v in row.values]
-                    if any('이름' in v or '날짜' in v or '일자' in v for v in row_vals):
-                        df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=idx + 1)
-                        break
-                        
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
@@ -125,36 +115,54 @@ if uploaded_file is not None:
     # 컬럼명 특수문자(' / ") 및 공백 일괄 정돈
     df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # 1. '이름' 관련 컬럼 자동 감지 및 변환
-    name_col = None
-    for c in df_raw.columns:
-        if '이름' in c or '성명' in c:
-            name_col = c
-            break
+    # 1. '이름' 컬럼 확인
+    if '이름' not in df_raw.columns:
+        name_col = next((c for c in df_raw.columns if '이름' in c or '성명' in c), None)
+        if name_col:
+            df_raw.rename(columns={name_col: '이름'}, inplace=True)
+        else:
+            st.error(f"🚨 '이름' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
+            st.stop()
 
-    if name_col:
-        df_raw.rename(columns={name_col: '이름'}, inplace=True)
-        current_names = list(df_raw['이름'].unique())
-        if current_names != TARGET_WORKERS and len(current_names) == 5:
-            name_map = dict(zip(current_names, TARGET_WORKERS))
-            df_raw['이름'] = df_raw['이름'].map(name_map)
-            st.sidebar.warning("⚠️ 파일 내 근로자 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
+    # 💡 2. '인증일시' 기반의 원본 근태 파일 처리 (인증일시 -> 날짜, 출근시간, 퇴근시간 파싱)
+    if '인증일시' in df_raw.columns:
+        st.sidebar.info("💡 '인증일시' 기반 출퇴근 기록 파일이 감지되어 자동 집계를 진행합니다.")
+        df_raw['DT'] = pd.to_datetime(df_raw['인증일시'])
+        df_raw['날짜'] = df_raw['DT'].dt.strftime('%Y-%m-%d')
+        df_raw['시간'] = df_raw['DT'].dt.strftime('%H:%M')
+        
+        # 날짜/이름별 최소 시간(출근) 및 최대 시간(퇴근) 자동 계산
+        grouped = df_raw.groupby(['날짜', '이름']).agg(
+            출근시간=('시간', 'min'),
+            퇴근시간=('시간', 'max'),
+            기록수=('시간', 'count')
+        ).reset_index()
+        
+        # 출근시간과 퇴근시간이 같으면(인증이 1회만 찍힘) 퇴근시간을 미기록 처리
+        grouped.loc[grouped['기록수'] == 1, '퇴근시간'] = ""
+        
+        grouped['외근시간'] = ""
+        grouped['복귀시간'] = ""
+        grouped['휴무여부'] = "X"
+        grouped['공휴일여부'] = "X"
+        grouped['비고'] = "인증일시 집계"
+        
+        df_raw = grouped
     else:
-        st.error(f"🚨 '이름' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
-        st.stop()
+        # 일반 양식인 경우 날짜 열 자동 감지
+        date_col = next((c for c in df_raw.columns if '날짜' in c or '일자' in c or '근무일' in c or 'date' in c.lower()), None)
+        if date_col:
+            df_raw.rename(columns={date_col: '날짜'}, inplace=True)
+        else:
+            st.error(f"🚨 '날짜' 또는 '인증일시' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
+            st.stop()
 
-    # 2. '날짜' 관련 컬럼 자동 감지 및 변환 💡 [신규 추가]
-    date_col = None
-    for c in df_raw.columns:
-        if '날짜' in c or '일자' in c or '근무일' in c or 'date' in c.lower():
-            date_col = c
-            break
-
-    if date_col:
-        df_raw.rename(columns={date_col: '날짜'}, inplace=True)
-    else:
-        st.error(f"🚨 '날짜' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
-        st.stop()
+    # 5인 이름 자동 매핑
+    current_names = list(df_raw['이름'].unique())
+    if current_names != TARGET_WORKERS and len(current_names) == 5:
+        name_map = dict(zip(current_names, TARGET_WORKERS))
+        df_raw['이름'] = df_raw['이름'].map(name_map)
+        st.sidebar.warning("⚠️ 파일 내 근로자 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
 
 else:
     df_raw = sample_df.copy()
@@ -220,7 +228,6 @@ with tab1:
     for idx, row in df_processed.iterrows():
         is_weekday = row['요일'] < 5
         
-        # 컬럼 존재 여부 안전 체크
         has_in = ('출근시간' in row and pd.notna(row['출근시간']) and str(row['출근시간']).strip() != "")
         has_out = ('퇴근시간' in row and pd.notna(row['퇴근시간']) and str(row['퇴근시간']).strip() != "")
         has_out_work = ('외근시간' in row and pd.notna(row['외근시간']) and str(row['외근시간']).strip() != "")
