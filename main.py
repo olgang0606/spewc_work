@@ -97,36 +97,37 @@ st.sidebar.download_button(
 uploaded_file = st.sidebar.file_uploader(
     "월별 근무현황 파일(Excel/CSV)", 
     type=["xlsx", "csv"]
-)
-
 # -----------------------------------------------------------------------------
-# 데이터 로드 및 시트명/이름 자동 수정
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# 데이터 로드 및 시트명/컬럼명/이름 안전 처리
+# 파일 데이터 로드 및 컬럼명 정리 (따옴표/공백 자동 제거)
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            # sheet_name=0 로 첫 번째 시트를 자동 로드
+            # sheet_name=0 으로 첫 번째 시트를 자동 로드
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
         
-    # 1. 컬럼명 앞뒤 공백 제거 (예: ' 이름 ' -> '이름')
-    df_raw.columns = [str(col).strip() for col in df_raw.columns]
+    # 💡 핵심 수정: 컬럼명의 작은따옴표('), 큰따옴표("), 공백을 모두 제거합니다.
+    df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # 2. '이름' 컬럼 존재 여부 안전 확인
+    # '이름' 컬럼 존재 확인 및 5인 명단 매핑
     if '이름' in df_raw.columns:
         current_names = list(df_raw['이름'].unique())
-        # 기존 파일의 이름이 5명이고, 설정 대상과 다를 경우 자동 매핑
+        # 기존 파일의 이름이 이전 명단일 경우 새로운 5인 명단으로 자동 변환
         if current_names != TARGET_WORKERS and len(current_names) == 5:
             name_map = dict(zip(current_names, TARGET_WORKERS))
             df_raw['이름'] = df_raw['이름'].map(name_map)
             st.sidebar.warning("⚠️ 파일 내 이름 데이터를 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
+    else:
+        st.error("🚨 '이름' 열을 찾을 수 없습니다. 컬럼명을 확인해 주세요.")
+        st.stop()
+else:
+    df_raw = sample_df.copy()
+    st.info("👈 사이드바에서 근무현황 파일을 업로드해주세요.")
     else:
         st.error("🚨 업로드한 파일에 '이름' 열(Column)이 포함되어 있지 않습니다. 파일 양식을 확인해 주세요.")
         st.stop()
