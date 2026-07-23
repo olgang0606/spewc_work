@@ -14,20 +14,22 @@ st.set_page_config(
 )
 
 st.title("📅 월별 근무현황 및 수당 지급 명세서 관리 시스템")
-st.caption("월별 근무현황 파일(.xlsx/.csv)을 업로드하여 시간외·출장 수당 계산 및 개별 지급명세서를 생성합니다.")
+st.caption("근로자 5인(박은경, 채미혜, 박인미, 조윤희, 성지영) 기준 근무현황 분석 및 수당 계산")
+
+# 지정 근로자 5인 명단
+TARGET_WORKERS = ["박은경", "채미혜", "박인미", "조윤희", "성지영"]
 
 # -----------------------------------------------------------------------------
 # 사이드바: 1. 월별 파일 업로드 & 샘플 양식 다운로드
 # -----------------------------------------------------------------------------
 st.sidebar.header("📁 월별 근무현황 파일 업로드")
 
-# 샘플 데이터 생성 함수 (기본 5인)
+# 5명 기준 샘플 데이터 생성 함수
 def create_sample_data():
     dates = pd.date_range(start="2026-03-01", end="2026-03-31", freq="D")
-    workers = ["박은경", "채미혜", "박인미", "조윤희", "성지영"]
     
     rows = []
-    for w in workers:
+    for w in TARGET_WORKERS:
         for d in dates:
             is_weekend = d.weekday() >= 5
             if is_weekend:
@@ -82,66 +84,73 @@ def create_sample_data():
 sample_df = create_sample_data()
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-    sample_df.to_excel(writer, index=False, sheet_name='근무현황')
+    sample_df.to_excel(writer, index=False, sheet_name='근태기록')
 buffer.seek(0)
 
 st.sidebar.download_button(
-    label="📄 샘플 근무현황 엑셀 다운로드",
+    label="📄 5인 이름 반영 샘플 엑셀 다운로드",
     data=buffer,
-    file_name="근무현황_양식_샘플.xlsx",
+    file_name="근무현황_양식_5인반영.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
 uploaded_file = st.sidebar.file_uploader(
-    "적용할 월의 근무현황 파일(Excel/CSV)", 
+    "월별 근무현황 파일(Excel/CSV)", 
     type=["xlsx", "csv"]
 )
 
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 월/근로자 분석
+# 데이터 로드 및 시트명/이름 자동 수정
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            df_raw = pd.read_excel(uploaded_file)
+            # sheet_name=0 으로 설정하여 어떤 시트명('근태기록', '근무현황' 등)이든 첫번째 시트 자동 인식
+            df_raw = pd.read_excel(uploaded_file, sheet_name=0)
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
+        
+    # 기존 파일의 이름이 홍길동, 김철수 등 이전 이름일 경우 박은경, 채미혜, 박인미, 조윤희, 성지영으로 자동 교체
+    current_names = list(df_raw['이름'].unique())
+    if current_names != TARGET_WORKERS and len(current_names) == 5:
+        name_map = dict(zip(current_names, TARGET_WORKERS))
+        df_raw['이름'] = df_raw['이름'].map(name_map)
+        st.sidebar.warning("⚠️ 파일 내 기존 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
 else:
     df_raw = sample_df.copy()
-    st.info("👈 사이드바에서 해당 월의 근무현황 파일을 업로드하면 업로드된 데이터로 자동 전환됩니다.")
+    st.info("👈 사이드바에서 근무현황 파일을 업로드해주세요. (기본 5인 반영 데이터 사용 중)")
 
-# 날짜 변환 및 예외 처리
+# 날짜 변환
 df_raw['날짜'] = pd.to_datetime(df_raw['날짜'])
 df_raw['요일'] = df_raw['날짜'].dt.weekday
 df_raw['주차'] = df_raw['날짜'].dt.isocalendar().week
 
-# 업로드된 데이터 기반의 정보 추출
 target_month_str = df_raw['날짜'].dt.strftime('%Y-%m').iloc[0]
 active_workers = list(df_raw['이름'].unique())
 
-st.success(f"📌 **현재 적용된 근무 달:** `{target_month_str}` | **총 근로자:** `{len(active_workers)}명` ({', '.join(active_workers)})")
+st.success(f"📌 **대상월:** `{target_month_str}` | **적용 근로자:** `{', '.join(active_workers)}`")
 
 # -----------------------------------------------------------------------------
-# 사이드바: 2. 업로드된 파일 근로자 기반 수당 단가 설정
+# 사이드바: 2. 수당 단가 설정
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.header(f"💰 근로자별 수당 단가 설정 ({target_month_str})")
+st.sidebar.header("💰 근로자별 수당 단가 설정")
 
 worker_rates = {}
 for w in active_workers:
     st.sidebar.subheader(f"👤 {w}")
     col_r1, col_r2 = st.sidebar.columns(2)
     with col_r1:
-        base_rate = st.number_input(f"{w} 기본시급(1배)", value=10000, step=500, key=f"base_{target_month_str}_{w}")
+        base_rate = st.number_input(f"{w} 기본시급(1배)", value=10000, step=500, key=f"base_{w}")
     with col_r2:
-        ot_rate = st.number_input(f"{w} 시간외단가", value=15000, step=500, key=f"ot_{target_month_str}_{w}")
+        ot_rate = st.number_input(f"{w} 시간외단가", value=15000, step=500, key=f"ot_{w}")
     worker_rates[w] = {"base_rate": base_rate, "ot_rate": ot_rate}
 
 # -----------------------------------------------------------------------------
-# 시간 파싱 함수
+# 시간 파싱 유틸리티
 # -----------------------------------------------------------------------------
 def parse_time(t_str):
     if pd.isna(t_str) or not str(t_str).strip():
@@ -162,15 +171,12 @@ def parse_time(t_str):
 tab1, tab2, tab3 = st.tabs(["📝 근무현황 데이터 확인 & 직접 지정", "📊 근태 및 수당 계산 분석", "🧾 개별 수당 지급명세서"])
 
 # -----------------------------------------------------------------------------
-# TAB 1: 미기록 처리 (휴가 / 종일출장 직접 지정)
+# TAB 1: 미기록 및 누락 확인
 # -----------------------------------------------------------------------------
 with tab1:
-    st.subheader(f"1. {target_month_str} 근무현황 및 미기록/누락 확인")
-    st.write("기록이 없는 날(출퇴근 및 외근/복귀 모두 미기록)은 **휴가(연가)** 또는 **종일출장** 여부를 직접 지정해주세요.")
+    st.subheader(f"1. {target_month_str} 근무현황 데이터 확인")
 
     df_processed = df_raw.copy()
-    
-    # 월별 구분 세션 관리
     if 'user_classifications' not in st.session_state:
         st.session_state.user_classifications = {}
 
@@ -198,12 +204,9 @@ with tab1:
     st.subheader("⚠️ 미기록 일자 구분 직접 지정 (휴가 vs 종일출장)")
     
     no_record_df = df_processed[df_processed['상태'] == "미기록(선택 필요)"]
-    
     if not no_record_df.empty:
-        st.warning(f"총 {len(no_record_df)}건의 미기록 날짜가 발견되었습니다. 해당 항목의 성격을 지정해 주세요.")
-        
         for idx, row in no_record_df.iterrows():
-            key_name = f"select_{target_month_str}_{row['이름']}_{row['날짜'].strftime('%Y%m%d')}"
+            key_name = f"select_{row['이름']}_{row['날짜'].strftime('%Y%m%d')}"
             c1, c2, c3, c4 = st.columns([2, 2, 3, 3])
             c1.write(row['날짜'].strftime('%Y-%m-%d (%a)'))
             c2.write(row['이름'])
@@ -219,13 +222,12 @@ with tab1:
         st.success("🎉 미기록된 평일 근무현황 데이터가 없습니다.")
 
 # -----------------------------------------------------------------------------
-# TAB 2: 수당 계산 & 주간/월간 분석
+# TAB 2: 수당 분석
 # -----------------------------------------------------------------------------
 with tab2:
-    st.subheader(f"2. {target_month_str} 시간외 근무 & 출장 수당 종합 산출")
+    st.subheader(f"2. {target_month_str} 수당 산출 결과")
     
     daily_results = []
-    
     for idx, row in df_raw.iterrows():
         worker = row['이름']
         date_str = row['날짜'].strftime('%Y-%m-%d')
@@ -233,8 +235,6 @@ with tab2:
         is_weekend = row['요일'] >= 5
         is_holiday = str(row['공휴일여부']).upper() == 'O' or is_weekend
         is_off_day = str(row['휴무여부']).upper() == 'O'
-        
-        rates = worker_rates.get(worker, {"base_rate": 10000, "ot_rate": 15000})
         
         t_in = parse_time(row['출근시간'])
         t_out = parse_time(row['퇴근시간'])
@@ -245,30 +245,24 @@ with tab2:
         ot_seconds = 0
         trip_hours = 0.0
         
-        # 미기록 직접 지정 적용
         user_choice = st.session_state.user_classifications.get(f"{worker}_{date_str}", None)
         if user_choice == "종일출장":
             trip_hours = 8.0
         elif user_choice == "휴가(연가)":
             is_off_day = True
         
-        # 평일 출퇴근 누락
         if not is_holiday and not is_off_day:
             if (t_in is None and t_out is not None) or (t_in is not None and t_out is None):
                 warning_msg.append("평일 출/퇴근 누락")
         
-        # 출장시간 계산
         if t_out_work is not None or t_ret_work is not None:
             actual_out_work = t_out_work if t_out_work is not None else time(9, 0)
             actual_ret_work = t_ret_work if t_ret_work is not None else time(18, 0)
-            
             dt_out = datetime.combine(date_obj, actual_out_work)
             dt_ret = datetime.combine(date_obj, actual_ret_work)
-            
             if dt_ret > dt_out:
                 trip_hours = (dt_ret - dt_out).total_seconds() / 3600.0
 
-        # 시간외근무 계산
         if is_holiday:
             if t_in is not None and t_out is not None:
                 dt_in = datetime.combine(date_obj, t_in)
@@ -283,7 +277,6 @@ with tab2:
                 if t_out > time(18, 0):
                     ot_seconds += (datetime.combine(date_obj, t_out) - datetime.combine(date_obj, time(18, 0))).total_seconds()
 
-        # 중복 인정 방지
         if is_holiday and trip_hours > 0 and ot_seconds > 0:
             trip_hours = 0.0
             warning_msg.append("출장-시간외 중복 (시간외만 인정)")
@@ -304,33 +297,17 @@ with tab2:
 
     df_res = pd.DataFrame(daily_results)
 
-    # 주간 12시간 검증
-    st.markdown("### ⚠️ 주간 시간외 근무 12시간 초과 검증")
-    weekly_ot = df_res.groupby(['이름', '주차'])['시간외초'].sum().reset_index()
-    weekly_ot['주간시간외_시간'] = weekly_ot['시간외초'] / 3600.0
-    
-    over_12h = weekly_ot[weekly_ot['주간시간외_시간'] > 12.0]
-    if not over_12h.empty:
-        for _, r in over_12h.iterrows():
-            st.error(f"🚨 **[경고]** {r['이름']} - {r['주차']}주차 시간외 근무가 **{r['주간시간외_시간']:.1f}시간**으로 주 12시간을 초과했습니다.")
-    else:
-        st.success("✅ 모든 근로자의 주간 시간외 근무 시간이 12시간 이내입니다.")
-
-    st.markdown("---")
-    st.markdown(f"### 📊 {target_month_str} 월간 근무현황 및 수당 집계")
-    
+    st.markdown("### 📊 근로자별 월간 수당 집계")
     summary_rows = []
     for worker in active_workers:
         w_df = df_res[df_res['이름'] == worker]
         rates = worker_rates.get(worker, {"base_rate": 10000, "ot_rate": 15000})
         
-        # 1시간 미만 절사
         total_ot_seconds = w_df['시간외초'].sum()
         total_ot_hours_raw = total_ot_seconds / 3600.0
         final_ot_hours = int(total_ot_hours_raw)
         
         total_off_hours = w_df['휴무시간'].sum()
-        
         hours_at_base = min(final_ot_hours, total_off_hours)
         hours_at_ot = max(0, final_ot_hours - hours_at_base)
         
@@ -374,11 +351,10 @@ with tab2:
     }), use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 3: 근로자별 수당 지급 명세서
+# TAB 3: 지급 명세서
 # -----------------------------------------------------------------------------
 with tab3:
-    st.subheader("3. 근로자별 수당 지급명세서 & 세부 산출 내역")
-    
+    st.subheader("3. 근로자별 수당 지급명세서")
     selected_worker = st.selectbox("명세서를 출력할 근로자를 선택하세요:", active_workers)
     
     if selected_worker:
@@ -387,55 +363,15 @@ with tab3:
         rates = worker_rates.get(selected_worker, {"base_rate": 10000, "ot_rate": 15000})
         
         if w_summary:
-            st.markdown("---")
-            st.markdown(f"## 📄 [{selected_worker}] 수당 지급 명세서")
-            st.caption(f"발행일자: {datetime.now().strftime('%Y-%m-%d')} | 대상월: {target_month_str}")
+            st.markdown(f"## 📄 [{selected_worker}] 수당 지급 명세서 ({target_month_str})")
             
             col_m1, col_m2, col_m3 = st.columns(3)
             col_m1.metric("총 지급 수당", f"{w_summary['총支給수당(원)']:,} 원")
-            col_m2.metric("시간외 근무 수당", f"{w_summary['시간외수당(원)']:,} 원", f"인정 {w_summary['인정시간외(시간)']}시간")
+            col_m2.metric("시간외 근무 수당", f"{w_summary['시간외수당(원)']:,} 원")
             col_m3.metric("출장 수당", f"{w_summary['출장수당(원)']:,} 원")
-            
-            st.markdown("### 🔍 지출 세부 적용 수당 산출 내역")
-            
-            st.markdown("#### 1) 시간외 근무 수당 산출")
-            st.write(f"- **월 총 실제 시간외 근무합계:** {w_summary['실제시간외(시간)']} 시간")
-            st.write(f"- **월 단위 인정 시간 (1시간 미만 버림):** **{w_summary['인정시간외(시간)']} 시간**")
-            st.write(f"- **단가 적용 세부 내역:**")
-            st.write(f"  * **1배율 적용 (평일 휴무 차감분):** {w_summary['1배율적용시간']} 시간 × {rates['base_rate']:,} 원 = **{w_summary['1배율적용시간'] * rates['base_rate']:,} 원**")
-            st.write(f"  * **시간외 단가 적용:** {w_summary['시간외단가적용시간']} 시간 × {rates['ot_rate']:,} 원 = **{w_summary['시간외단가적용시간'] * rates['ot_rate']:,} 원**")
-            st.info(f"💡 **시간외 수당 소계:** {w_summary['시간외수당(원)']:,} 원")
-
-            st.markdown("#### 2) 출장 수당 산출")
-            st.write(f"- **4시간 미만 출장:** {w_summary['출장(4시간미만)']} × 10,000 원")
-            st.write(f"- **4시간 이상 출장:** {w_summary['출장(4시간이상)']} × 20,000 원")
-            st.info(f"💡 **출장 수당 소계:** {w_summary['출장수당(원)']:,} 원")
-
-            st.markdown("#### 3) 일자별 세부 근무현황 및 수당 내역")
             
             disp_df = w_daily[['날짜', '요일', '휴일여부', '시간외초', '출장시간', '휴무시간', '경고']].copy()
             disp_df['시간외근무(분)'] = (disp_df['시간외초'] / 60).astype(int)
             disp_df = disp_df.drop(columns=['시간외초'])
             
             st.dataframe(disp_df, use_container_width=True)
-            
-            receipt_text = f"""========================================
-[수당 지급 명세서 - {target_month_str}]
-성명: {selected_worker}
-기본시급: {rates['base_rate']:,}원 | 시간외단가: {rates['ot_rate']:,}원
-----------------------------------------
-1. 시간외수당: {w_summary['시간외수당(원)']:,} 원
-   - 인정시간: {w_summary['인정시간외(시간)']}시간 (실제: {w_summary['실제시간외(시간)']}시간)
-   - 1배율 적용({w_summary['1배율적용시간']}h) + 시간외단가({w_summary['시간외단가적용시간']}h)
-2. 출장수당: {w_summary['출장수당(원)']:,} 원
-   - 4시간 미만: {w_summary['출장(4시간미만)']} / 4시간 이상: {w_summary['출장(4시간이상)']}
-----------------------------------------
-총 지급액: {w_summary['총支給수당(원)']:,} 원
-========================================
-"""
-            st.download_button(
-                label=f"📥 {selected_worker} ({target_month_str}) 명세서 다운로드",
-                data=receipt_text,
-                file_name=f"{target_month_str}_{selected_worker}_수당지급명세서.txt",
-                mime="text/plain"
-            )
