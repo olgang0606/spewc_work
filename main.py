@@ -87,6 +87,7 @@ with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
     sample_df.to_excel(writer, index=False, sheet_name='근태기록')
 buffer.seek(0)
 
+# 다운로드 버튼 (괄호 쌍 정확히 정상 닫힘)
 st.sidebar.download_button(
     label="📄 5인 이름 반영 샘플 엑셀 다운로드",
     data=buffer,
@@ -94,36 +95,38 @@ st.sidebar.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
+# 파일 업로드 (97번째 줄 부근)
 uploaded_file = st.sidebar.file_uploader(
     "월별 근무현황 파일(Excel/CSV)", 
     type=["xlsx", "csv"]
+)
+
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 컬럼명 정리 (따옴표/공백 자동 제거)
+# 파일 데이터 로드 및 시트명/컬럼명/이름 자동 정돈
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             df_raw = pd.read_csv(uploaded_file)
         else:
-            # sheet_name=0 으로 첫 번째 시트를 자동 로드
+            # sheet_name=0 으로 시트 이름 상관없이 첫 번째 시트 자동 로드
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
     except Exception as e:
         st.error(f"파일을 읽는 도중 오류가 발생했습니다: {e}")
         st.stop()
         
-    # 💡 핵심 수정: 컬럼명의 작은따옴표('), 큰따옴표("), 공백을 모두 제거합니다.
+    # 컬럼명에 붙은 작은따옴표('), 큰따옴표("), 공백을 깔끔하게 자동 제거
     df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # '이름' 컬럼 존재 확인 및 5인 명단 매핑
+    # '이름' 컬럼 존재 확인 및 5인 명단(박은경, 채미혜, 박인미, 조윤희, 성지영)으로 자동 전환
     if '이름' in df_raw.columns:
         current_names = list(df_raw['이름'].unique())
-        # 기존 파일의 이름이 이전 명단일 경우 새로운 5인 명단으로 자동 변환
         if current_names != TARGET_WORKERS and len(current_names) == 5:
             name_map = dict(zip(current_names, TARGET_WORKERS))
             df_raw['이름'] = df_raw['이름'].map(name_map)
-            st.sidebar.warning("⚠️ 파일 내 이름 데이터를 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
+            st.sidebar.warning("⚠️ 파일 내 근로자 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
     else:
-        st.error("🚨 '이름' 열을 찾을 수 없습니다. 컬럼명을 확인해 주세요.")
+        st.error("🚨 파일 내에서 '이름' 열(Column)을 찾을 수 없습니다. 파일 양식을 확인해 주세요.")
         st.stop()
 else:
     df_raw = sample_df.copy()
