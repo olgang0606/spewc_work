@@ -1,131 +1,96 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, time
+from datetime import datetime
 import numpy as np
 
 st.set_page_config(page_title="근태 및 수당 관리", layout="wide")
-st.title("🕒 근로자 근태 및 수당 관리 시스템")
-st.markdown("**5명 근로자 근무시간 / 시간외 / 출장수당 관리**")
+st.title("🕒 근로자 근태 · 수당 관리 시스템")
+st.markdown("**근무현황.xlsx 파일을 업로드하세요**")
 
-# ====================== FILE UPLOAD ======================
-uploaded_file = st.file_uploader("월별 근무현황 Excel 업로드 (.xlsx)", type=["xlsx"])
+# 파일 업로드 (필수)
+uploaded_file = st.file_uploader("📁 근무현황.xlsx 업로드", type=["xlsx"])
 
 if uploaded_file is None:
-    st.info("📌 기본 9월 데이터 로드 중...")
-    try:
-        df = pd.read_excel('/home/workdir/attachments/근무현황.xlsx', sheet_name='9월', header=2)
-        st.success("✅ 2025년 9월 기본 데이터 로드 완료")
-    except Exception as e:
-        st.error("기본 파일을 찾을 수 없습니다. Excel 파일을 업로드하세요.")
-        st.stop()
-else:
-    df = pd.read_excel(uploaded_file, header=2)
-    st.success(f"✅ {uploaded_file.name} 로드 완료")
+    st.warning("⚠️ 근무현황.xlsx 파일을 업로드해주세요.")
+    st.stop()
 
-# ====================== DATA PREP ======================
+# 데이터 로드
+df = pd.read_excel(uploaded_file, header=2)
+st.success(f"✅ {uploaded_file.name} 파일 로드 완료 ({len(df)}건)")
+
+# 데이터 정리
 df['인증일시'] = pd.to_datetime(df['인증일시'])
-df = df.sort_values(['이름', '인증일시']).reset_index(drop=True)
 df['date'] = df['인증일시'].dt.date
+df = df.sort_values(['이름', '인증일시'])
 
-employees = sorted(df['이름'].unique())
-
-def is_holiday(dt):
-    # 2025년 9월 공휴일 없음. 주말만 처리
-    return dt.weekday() >= 5
-
-# ====================== PROCESSING ======================
-@st.cache_data
-def process_attendance(df):
+# ====================== 계산 ======================
+def calculate_attendance(df):
     results = []
     weekly_ot = {}
 
     for (emp, date), group in df.groupby(['이름', 'date']):
-        date_dt = pd.to_datetime(date)
-        week_key = (emp, date_dt.isocalendar()[1])
+        dt = pd.to_datetime(date)
+        week_key = (emp, dt.isocalendar()[1])
 
         if week_key not in weekly_ot:
             weekly_ot[week_key] = 0.0
 
-        records = group.sort_values('인증일시')
-        clock_in = None
-        clock_out = None
-        outings = []
-        note = ""
+        clock_in = group[group['인증모드']=='출근']['인증일시'].min()
+        clock_out = group[group['인증모드']=='퇴근']['인증일시'].max()
 
-        for _, row in records.iterrows():
-            mode = row['인증모드']
-            ts = row['인증일시']
-            if mode == '출근':
-                clock_in = ts
-            elif mode == '퇴근':
-                clock_out = ts
-            elif mode in ['외출', '복귀']:
-                outings.append((mode, ts))
+        total_h = 0.0
+        if pd.notna(clock_in) and pd.notna(clock_out):
+            total_h = (clock_out - clock_in).total_seconds() / 3600
 
-        total_hours = 0.0
-        business_hours = 0.0
+        is_weekend = dt.weekday() >= 5
+        basic = 9.0 if not is_weekend else 0.0
+        ot = min(total_h, 8.0) if is_weekend else max(0, total_h - basic)
+        ot = np.floor(ot * 2) / 2   # 30분 미만 버림
 
-        if clock_in and clock_out:
-            total_hours = (clock_out - clock_in).total_seconds() / 3600
+        weekly_ot[week_key] += ot
+        warning = "🚨 주 12시간 초과" if weekly_ot[week_key] > 12 else ""
 
-        # 출장 처리 (간단)
-        if len(outings) >= 2:
-            for i in range(0, len(outings)-1, 2):
-                if outings[i][0] == '외출' and outings[i+1][0] == '복귀':
-                    business_hours += (outings[i+1][1] - outings[i][1]).total_seconds() / 3600
-
-        is_hol = is_holiday(date_dt)
-        basic_hours = 9.0 if not is_hol and date_dt.weekday() < 5 else 0.0
-
-        if is_hol or date_dt.weekday() >= 5:
-            ot_hours = min(total_hours, 8.0)
-        else:
-            ot_hours = max(0, total_hours - basic_hours)
-
-        weekly_ot[week_key] += ot_hours
-        if weekly_ot[week_key] > 12:
-            note = "🚨 주간 시간외 12시간 초과!"
-
-        ot_hours = np.floor(ot_hours * 2) / 2   # 30분 미만 버림
+        # 출장시간 (외출~복귀)
+        business = 0.0
+        out_times = group[group['인증모드'].isin(['외출', '복귀'])]['인증일시']
+        if len(out_times) >= 2:
+            business = (out_times.max() - out_times.min()).total_seconds() / 3600
 
         results.append({
             '이름': emp,
             '날짜': str(date),
-            '총근무시간(h)': round(total_hours, 2),
-            '기본근무(h)': basic_hours,
-            '시간외(h)': round(ot_hours, 2),
-            '출장시간(h)': round(business_hours, 2),
-            '비고': note
+            '총근무시간': round(total_h, 2),
+            '시간외': round(ot, 2),
+            '출장시간': round(business, 2),
+            '비고': warning
         })
-
+    
     return pd.DataFrame(results)
 
-attendance_df = process_attendance(df)
+result_df = calculate_attendance(df)
 
-# ====================== UI ======================
-st.sidebar.header("필터")
-selected_emp = st.sidebar.selectbox("근로자 선택", ["전체"] + employees)
+# ====================== 화면 ======================
+st.header("📊 근태 분석 결과")
+st.dataframe(result_df, use_container_width=True, hide_index=True)
 
-if selected_emp != "전체":
-    display_df = attendance_df[attendance_df['이름'] == selected_emp]
-else:
-    display_df = attendance_df
-
-st.header("📅 근태 테이블")
-st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-# ====================== 수당 ======================
-st.header("💰 수당 계산")
-if st.button("수당 계산하기", type="primary"):
-    summary = display_df.groupby('이름').agg({
-        '총근무시간(h)': 'sum',
-        '시간외(h)': 'sum',
-        '출장시간(h)': 'sum'
+if st.button("💰 수당 계산", type="primary"):
+    summary = result_df.groupby('이름').agg({
+        '총근무시간': 'sum',
+        '시간외': 'sum',
+        '출장시간': 'sum'
     }).round(2)
     
-    summary['출장수당(원)'] = summary['출장시간(h)'].apply(lambda x: sum(20000 if h >= 4 else 10000 for h in [x]))
-    
+    summary['출장수당'] = summary['출장시간'].apply(lambda x: 20000 if x >= 4 else 10000 if x > 0 else 0)
     st.dataframe(summary, use_container_width=True)
-    st.download_button("📥 CSV 다운로드", summary.to_csv().encode('utf-8'), "수당_요약.csv")
 
-st.info("**규칙 적용 완료**: 30분 미만 버림, 주간 12h 경고, 출장수당(4h 기준), 주말/평일 구분")
+    csv = summary.to_csv().encode('utf-8')
+    st.download_button("📥 수당 요약 다운로드", csv, "수당_요약.csv", "text/csv")
+
+st.info("""
+**적용 규칙**
+- 평일 기본 9시간 (9~18시)
+- 주말/공휴일 전체 시간외 (최대 8시간)
+- 30분 미만 버림
+- 주간 시간외 12시간 초과 경고
+- 출장: 4시간 이상 2만원, 미만 1만원
+""")
