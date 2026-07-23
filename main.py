@@ -100,7 +100,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # -----------------------------------------------------------------------------
-# 파일 데이터 로드 및 헤더 자동 감지/정돈
+# 파일 데이터 로드 및 헤더/컬럼 자동 감지
 # -----------------------------------------------------------------------------
 if uploaded_file is not None:
     try:
@@ -109,12 +109,12 @@ if uploaded_file is not None:
         else:
             df_raw = pd.read_excel(uploaded_file, sheet_name=0)
             
-            # 💡 [스마트 헤더 감지]: 1행이 제목일 경우, '이름'이 포함된 진짜 컬럼 행을 자동으로 찾습니다.
+            # [스마트 헤더 감지]: 1행이 제목일 경우 '이름'이나 '날짜'가 포함된 행 찾기
             cols_str = [str(c) for c in df_raw.columns]
-            if not any('이름' in c for c in cols_str):
+            if not any('이름' in c or '날짜' in c or '일자' in c for c in cols_str):
                 for idx, row in df_raw.head(10).iterrows():
                     row_vals = [str(v) for v in row.values]
-                    if any('이름' in v for v in row_vals):
+                    if any('이름' in v or '날짜' in v or '일자' in v for v in row_vals):
                         df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=idx + 1)
                         break
                         
@@ -125,10 +125,10 @@ if uploaded_file is not None:
     # 컬럼명 특수문자(' / ") 및 공백 일괄 정돈
     df_raw.columns = [str(col).strip().strip("'").strip('"') for col in df_raw.columns]
 
-    # '이름' 포함 컬럼 자동 변경 처리
+    # 1. '이름' 관련 컬럼 자동 감지 및 변환
     name_col = None
     for c in df_raw.columns:
-        if '이름' in c:
+        if '이름' in c or '성명' in c:
             name_col = c
             break
 
@@ -140,8 +140,22 @@ if uploaded_file is not None:
             df_raw['이름'] = df_raw['이름'].map(name_map)
             st.sidebar.warning("⚠️ 파일 내 근로자 이름을 [박은경, 채미혜, 박인미, 조윤희, 성지영]으로 자동 변환했습니다.")
     else:
-        st.error(f"🚨 업로드한 파일에서 '이름' 열을 찾을 수 없습니다.\n현재 인식된 열 목록: {list(df_raw.columns)}")
+        st.error(f"🚨 '이름' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
         st.stop()
+
+    # 2. '날짜' 관련 컬럼 자동 감지 및 변환 💡 [신규 추가]
+    date_col = None
+    for c in df_raw.columns:
+        if '날짜' in c or '일자' in c or '근무일' in c or 'date' in c.lower():
+            date_col = c
+            break
+
+    if date_col:
+        df_raw.rename(columns={date_col: '날짜'}, inplace=True)
+    else:
+        st.error(f"🚨 '날짜' 열을 찾을 수 없습니다. (인식된 열 목록: {list(df_raw.columns)})")
+        st.stop()
+
 else:
     df_raw = sample_df.copy()
     st.info("👈 사이드바에서 근무현황 파일을 업로드해주세요.")
@@ -205,10 +219,12 @@ with tab1:
 
     for idx, row in df_processed.iterrows():
         is_weekday = row['요일'] < 5
-        has_in = pd.notna(row['출근시간']) and str(row['출근시간']).strip() != ""
-        has_out = pd.notna(row['퇴근시간']) and str(row['퇴근시간']).strip() != ""
-        has_out_work = pd.notna(row['외근시간']) and str(row['외근시간']).strip() != ""
-        has_ret_work = pd.notna(row['복귀시간']) and str(row['복귀시간']).strip() != ""
+        
+        # 컬럼 존재 여부 안전 체크
+        has_in = ('출근시간' in row and pd.notna(row['출근시간']) and str(row['출근시간']).strip() != "")
+        has_out = ('퇴근시간' in row and pd.notna(row['퇴근시간']) and str(row['퇴근시간']).strip() != "")
+        has_out_work = ('외근시간' in row and pd.notna(row['외근시간']) and str(row['외근시간']).strip() != "")
+        has_ret_work = ('복귀시간' in row and pd.notna(row['복귀시간']) and str(row['복귀시간']).strip() != "")
         
         no_records = (not has_in) and (not has_out) and (not has_out_work) and (not has_ret_work)
         is_missing_commute = is_weekday and ((has_in and not has_out) or (not has_in and has_out))
@@ -221,7 +237,8 @@ with tab1:
 
         df_processed.at[idx, '상태'] = status
 
-    st.dataframe(df_processed[['날짜', '이름', '출근시간', '퇴근시간', '외근시간', '복귀시간', '휴무여부', '공휴일여부', '상태', '비고']], use_container_width=True)
+    display_cols = [c for c in ['날짜', '이름', '출근시간', '퇴근시간', '외근시간', '복귀시간', '휴무여부', '공휴일여부', '상태', '비고'] if c in df_processed.columns]
+    st.dataframe(df_processed[display_cols], use_container_width=True)
 
     st.markdown("---")
     st.subheader("⚠️ 미기록 일자 구분 직접 지정 (휴가 vs 종일출장)")
@@ -256,13 +273,14 @@ with tab2:
         date_str = row['날짜'].strftime('%Y-%m-%d')
         date_obj = row['날짜']
         is_weekend = row['요일'] >= 5
-        is_holiday = str(row['공휴일여부']).upper() == 'O' or is_weekend
-        is_off_day = str(row['휴무여부']).upper() == 'O'
         
-        t_in = parse_time(row['출근시간'])
-        t_out = parse_time(row['퇴근시간'])
-        t_out_work = parse_time(row['외근시간'])
-        t_ret_work = parse_time(row['복귀시간'])
+        is_holiday = is_weekend or ('공휴일여부' in row and str(row['공휴일여부']).upper() == 'O')
+        is_off_day = '휴무여부' in row and str(row['휴무여부']).upper() == 'O'
+        
+        t_in = parse_time(row.get('출근시간'))
+        t_out = parse_time(row.get('퇴근시간'))
+        t_out_work = parse_time(row.get('외근시간'))
+        t_ret_work = parse_time(row.get('복귀시간'))
         
         warning_msg = []
         ot_seconds = 0
